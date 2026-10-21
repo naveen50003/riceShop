@@ -1,4 +1,3 @@
-import 'package:excel/excel.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:rice_shop_appln/services/excel_import_service.dart';
@@ -9,6 +8,7 @@ import '../database/hive_helper.dart';
 import '../models/customer.dart';
 import '../services/excel_export_service.dart';
 import 'master_customer_screen.dart';
+import 'package:excel/excel.dart' as excel_f;
 
 class RecordsScreen extends StatefulWidget {
   const RecordsScreen({super.key});
@@ -144,17 +144,52 @@ class _RecordsScreenState extends State<RecordsScreen> {
   }
 
   // ============================================================
-  // CALL
+  // CALL CUSTOMER
   // ============================================================
 
   Future<void> makeCall(String mobile) async {
+    final number = mobile.trim();
+
+    if (number.isEmpty) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Mobile number is not available'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     final uri = Uri(
       scheme: 'tel',
-      path: mobile,
+      path: number,
     );
 
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri);
+    try {
+      final launched = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+
+      if (!launched && mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Unable to open phone dialer'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to open phone dialer: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
     }
   }
 
@@ -389,13 +424,32 @@ class _RecordsScreenState extends State<RecordsScreen> {
     );
   }
   
+   // ============================================================
+  // MESSAGE
+  // ============================================================
+
+    void _showMessage(
+      String message, {
+      bool isError = false,
+    }) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor:
+              isError ? dangerColor : successColor,
+        ),
+      );
+    }
   // ============================================================
   // EXCEL EXPORT
   // ============================================================
 
   Future<void> exportToExcel() async {
     try {
-      final excel = Excel.createExcel();
+      final excel = excel_f.Excel.createExcel();
       excel.rename('Sheet1', 'Customers');
 
       final sheet = excel['Customers'];
@@ -408,64 +462,64 @@ class _RecordsScreenState extends State<RecordsScreen> {
       sheet.setColumnWidth(4, 12);
 
       // Header style
-      final headerStyle = CellStyle(
+      final headerStyle = excel_f.CellStyle(
         bold: true,
-        horizontalAlign: HorizontalAlign.Center,
+        horizontalAlign: excel_f.HorizontalAlign.Center,
       );
 
       // Header
       sheet
           .cell(
-            CellIndex.indexByColumnRow(
+            excel_f.CellIndex.indexByColumnRow(
               columnIndex: 0,
               rowIndex: 0,
             ),
           )
-          .value = TextCellValue(
+          .value = excel_f.TextCellValue(
         "Customer Name",
       );
 
       sheet
           .cell(
-            CellIndex.indexByColumnRow(
+            excel_f.CellIndex.indexByColumnRow(
               columnIndex: 1,
               rowIndex: 0,
             ),
           )
-          .value = TextCellValue(
+          .value = excel_f.TextCellValue(
         "Mobile Number",
       );
 
       sheet
           .cell(
-            CellIndex.indexByColumnRow(
+            excel_f.CellIndex.indexByColumnRow(
               columnIndex: 2,
               rowIndex: 0,
             ),
           )
-          .value = TextCellValue(
+          .value = excel_f.TextCellValue(
         "Ration Card Number",
       );
 
       sheet
           .cell(
-            CellIndex.indexByColumnRow(
+            excel_f.CellIndex.indexByColumnRow(
               columnIndex: 3,
               rowIndex: 0,
             ),
           )
-          .value = TextCellValue(
+          .value = excel_f.TextCellValue(
         "Aadhaar Number",
       );
 
       sheet
           .cell(
-            CellIndex.indexByColumnRow(
+            excel_f.CellIndex.indexByColumnRow(
               columnIndex: 4,
               rowIndex: 0,
             ),
           )
-          .value = TextCellValue(
+          .value = excel_f.TextCellValue(
         "Units",
       );
 
@@ -473,7 +527,7 @@ class _RecordsScreenState extends State<RecordsScreen> {
       for (int column = 0; column < 5; column++) {
         sheet
             .cell(
-              CellIndex.indexByColumnRow(
+              excel_f.CellIndex.indexByColumnRow(
                 columnIndex: column,
                 rowIndex: 0,
               ),
@@ -486,11 +540,11 @@ class _RecordsScreenState extends State<RecordsScreen> {
         final customer = entry.value;
 
         sheet.appendRow([
-          TextCellValue(customer.name),
-          TextCellValue(customer.mobile),
-          TextCellValue(customer.rationCard),
-          TextCellValue(customer.aadhaar),
-          TextCellValue(customer.units),
+          excel_f.TextCellValue(customer.name),
+          excel_f.TextCellValue(customer.mobile),
+          excel_f.TextCellValue(customer.rationCard),
+          excel_f.TextCellValue(customer.aadhaar),
+          excel_f.TextCellValue(customer.units),
         ]);
       }
 
@@ -860,6 +914,8 @@ class _RecordsScreenState extends State<RecordsScreen> {
 
                             final updated =
                                 Customer(
+                              callStatus: customer.callStatus,
+                              lastCalledAt: customer.lastCalledAt,
                               name:
                                   nameController
                                       .text
@@ -926,6 +982,507 @@ class _RecordsScreenState extends State<RecordsScreen> {
     mobileController.dispose();
     rationController.dispose();
     aadhaarController.dispose();
+  }
+
+  // ============================================================
+  // MANAGE CALL STATUS
+  // ============================================================
+
+  Future<void> showCallStatusDialog(
+    dynamic hiveKey,
+    Customer customer,
+  ) async {
+    const statuses = [
+      'Not Called',
+      'Call Initiated',
+      'Answered',
+      'Not Answered',
+      'Busy',
+      'Call Back Required',
+      'Completed',
+    ];
+
+    String selectedStatus = statuses.contains(customer.callStatus)
+        ? customer.callStatus
+        : 'Not Called';
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Update Call Status'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    customer.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: selectedStatus,
+                    decoration: const InputDecoration(
+                      labelText: 'Call Status',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: statuses.map((status) {
+                      return DropdownMenuItem<String>(
+                        value: status,
+                        child: Text(status),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+
+                      setDialogState(() {
+                        selectedStatus = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(
+                      dialogContext,
+                      selectedStatus,
+                    );
+                  },
+                  child: const Text('Save Status'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    try {
+      await HiveHelper.updateCallTracking(
+        isMaster: false,
+        key: hiveKey,
+        status: result,
+        lastCalledAt: result == 'Not Called'
+            ? null
+            : DateTime.now(),
+      );
+
+      await loadCustomers();
+
+      if (!mounted) return;
+
+      _showMessage('Call status updated: $result');
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage(
+        'Unable to update call status: $e',
+        isError: true,
+      );
+    }
+  }
+
+  // ============================================================
+  // VIEW RECORDS CUSTOMER CARD
+  // ============================================================
+
+  Widget buildCustomerCard(
+    MapEntry<dynamic, Customer> entry,
+  ) {
+    final hiveKey = entry.key;
+    final customer = entry.value;
+
+    final callStatus = customer.callStatus.isEmpty
+        ? 'Not Called'
+        : customer.callStatus;
+
+    final lastCalledAt = customer.lastCalledAt;
+
+    final parsedDate = lastCalledAt == null ||
+            lastCalledAt.trim().isEmpty
+        ? null
+        : DateTime.tryParse(lastCalledAt);
+
+    final formattedLastCalled = parsedDate == null
+        ? 'Never'
+        : '${parsedDate.toLocal().day.toString().padLeft(2, '0')}/'
+            '${parsedDate.toLocal().month.toString().padLeft(2, '0')}/'
+            '${parsedDate.toLocal().year} '
+            '${parsedDate.toLocal().hour.toString().padLeft(2, '0')}:'
+            '${parsedDate.toLocal().minute.toString().padLeft(2, '0')}';
+
+    Color getStatusColor(String status) {
+      switch (status) {
+        case 'Completed':
+          return Colors.green;
+        case 'Answered':
+          return Colors.teal;
+        case 'Call Back Required':
+          return Colors.orange;
+        case 'Not Answered':
+          return Colors.deepOrange;
+        case 'Busy':
+          return Colors.red;
+        case 'Call Initiated':
+          return Colors.blue;
+        default:
+          return Colors.grey;
+      }
+    }
+
+    final statusColor = getStatusColor(callStatus);
+
+    return Card(
+      margin: const EdgeInsets.symmetric(
+        horizontal: 15,
+        vertical: 8,
+      ),
+      elevation: 4,
+      color: Colors.white,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(
+          color: Colors.grey.shade200,
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(15),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // ==================================================
+            // CUSTOMER NAME
+            // ==================================================
+
+            Row(
+              children: [
+                CircleAvatar(
+                  radius: 25,
+                  backgroundColor: Colors.green.shade700,
+                  child: const Icon(
+                    Icons.person,
+                    color: Colors.white,
+                    size: 28,
+                  ),
+                ),
+
+                const SizedBox(width: 12),
+
+                Expanded(
+                  child: Text(
+                    customer.name.isEmpty
+                        ? 'Unnamed Customer'
+                        : customer.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 10),
+
+            const Divider(),
+
+            // ==================================================
+            // MOBILE NUMBER
+            // ==================================================
+
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.phone,
+                color: Colors.green,
+              ),
+              title: Text(
+                customer.mobile.isEmpty
+                    ? 'No mobile number'
+                    : customer.mobile,
+              ),
+            ),
+
+            // ==================================================
+            // RATION CARD
+            // ==================================================
+
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.credit_card,
+                color: Colors.green,
+              ),
+              title: Text(
+                customer.rationCard.isEmpty
+                    ? 'No ration card number'
+                    : customer.rationCard,
+              ),
+            ),
+
+            // ==================================================
+            // AADHAAR
+            // ==================================================
+
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.badge,
+                color: Colors.green,
+              ),
+              title: Text(
+                customer.aadhaar.isEmpty
+                    ? 'No Aadhaar number'
+                    : customer.aadhaar,
+              ),
+            ),
+
+            // ==================================================
+            // UNITS
+            // ==================================================
+
+            ListTile(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(
+                Icons.people,
+                color: Colors.green,
+              ),
+              title: Text(
+                'Units: ${customer.units}',
+              ),
+            ),
+
+            const SizedBox(height: 8),
+
+            // ==================================================
+            // CALL STATUS
+            // ==================================================
+
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: statusColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: statusColor.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: statusColor,
+                        size: 21,
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      const Text(
+                        'Call Status',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+
+                      const Spacer(),
+
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            callStatus,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.access_time,
+                        size: 17,
+                        color: Colors.grey.shade700,
+                      ),
+
+                      const SizedBox(width: 7),
+
+                      Expanded(
+                        child: Text(
+                          'Last called: $formattedLastCalled',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            // ==================================================
+            // ACTION BUTTONS
+            // ==================================================
+
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 5,
+                vertical: 4,
+              ),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 2,
+                runSpacing: 2,
+                children: [
+                  // CALL
+                  IconButton(
+                    tooltip: 'Call',
+                    icon: const Icon(
+                      Icons.call,
+                      color: Colors.green,
+                    ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => makeCall(customer.mobile),
+                  ),
+
+                  // UPDATE CALL STATUS
+                  IconButton(
+                    tooltip: 'Update Call Status',
+                    icon: const Icon(
+                      Icons.assignment_outlined,
+                      color: Colors.blue,
+                    ),
+                    onPressed: () => showCallStatusDialog(
+                      hiveKey,
+                      customer,
+                    ),
+                  ),
+
+                  // SMS
+                  IconButton(
+                    tooltip: 'Text / SMS',
+                    icon: const Icon(
+                      Icons.sms_outlined,
+                      color: Colors.green,
+                    ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => sendSMS(customer.mobile),
+                  ),
+
+                  // WHATSAPP
+                  IconButton(
+                    tooltip: 'WhatsApp',
+                    icon: const Icon(
+                      Icons.chat,
+                      color: Colors.green,
+                    ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => openWhatsApp(customer),
+                  ),
+
+                  // COPY NUMBER
+                  IconButton(
+                    tooltip: 'Copy Mobile Number',
+                    icon: const Icon(
+                      Icons.copy,
+                      color: Colors.teal,
+                    ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => copyNumber(customer.mobile),
+                  ),
+
+                  // SHARE CUSTOMER
+                  IconButton(
+                    tooltip: 'Share Customer',
+                    icon: const Icon(
+                      Icons.share,
+                      color: Colors.blue,
+                    ),
+                    onPressed: () => shareCustomer(customer),
+                  ),
+
+                  // EDIT
+                  IconButton(
+                    tooltip: 'Edit Customer',
+                    icon: const Icon(
+                      Icons.edit,
+                      color: Colors.blue,
+                    ),
+                    onPressed: () => showEditDialog(
+                      hiveKey,
+                      customer,
+                    ),
+                  ),
+
+                  // DELETE
+                  IconButton(
+                    tooltip: 'Delete Customer',
+                    icon: const Icon(
+                      Icons.delete_outline,
+                      color: Colors.red,
+                    ),
+                    onPressed: () => deleteCustomer(hiveKey),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // ============================================================
@@ -1202,14 +1759,9 @@ class _RecordsScreenState extends State<RecordsScreen> {
                             ],
                           ),
                         )
-                      : ListView
-                          .builder(
-                          physics:
-                              const AlwaysScrollableScrollPhysics(),
-
-                          itemCount:
-                              paginatedCustomers
-                                  .length,
+                      : ListView.builder(
+                          physics:const AlwaysScrollableScrollPhysics(),
+                          itemCount:paginatedCustomers.length,
 
                           itemBuilder:
                               (context,
@@ -1218,278 +1770,7 @@ class _RecordsScreenState extends State<RecordsScreen> {
                                 paginatedCustomers[
                                     index];
 
-                            final hiveKey =
-                                entry.key;
-
-                            final customer =
-                                entry.value;
-
-                            return Card(
-                              margin:
-                                  const EdgeInsets
-                                      .symmetric(
-                                horizontal:
-                                    15,
-                                vertical:
-                                    8,
-                              ),
-
-                              elevation: 5,
-
-                              shape:
-                                  RoundedRectangleBorder(
-                                borderRadius:
-                                    BorderRadius
-                                        .circular(
-                                  18,
-                                ),
-                              ),
-
-                              child:
-                                  Padding(
-                                padding:
-                                    const EdgeInsets
-                                        .all(
-                                  15,
-                                ),
-
-                                child:
-                                    Column(
-                                  crossAxisAlignment:
-                                      CrossAxisAlignment
-                                          .start,
-
-                                  children: [
-                                    // ============================
-                                    // NAME
-                                    // ============================
-
-                                    Row(
-                                      children: [
-                                        CircleAvatar(
-                                          backgroundColor:
-                                              Colors.green.shade700,
-
-                                          child:
-                                              const Icon(
-                                            Icons
-                                                .person,
-                                            color:
-                                                Colors.white,
-                                          ),
-                                        ),
-
-                                        const SizedBox(
-                                          width:
-                                              15,
-                                        ),
-
-                                        Expanded(
-                                          child:
-                                              Text(
-                                            customer
-                                                .name,
-
-                                            style:
-                                                const TextStyle(
-                                              fontSize:
-                                                  20,
-                                              fontWeight:
-                                                  FontWeight.bold,
-                                            ),
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-
-                                    const Divider(),
-
-                                    // ============================
-                                    // MOBILE
-                                    // ============================
-
-                                    ListTile(
-                                      dense:
-                                          true,
-
-                                      leading:
-                                          const Icon(
-                                        Icons
-                                            .phone,
-                                      ),
-
-                                      title:
-                                          Text(
-                                        customer
-                                            .mobile,
-                                      ),
-                                    ),
-
-                                    // ============================
-                                    // RATION
-                                    // ============================
-
-                                    ListTile(
-                                      dense:
-                                          true,
-
-                                      leading:
-                                          const Icon(
-                                        Icons
-                                            .credit_card,
-                                      ),
-
-                                      title:
-                                          Text(
-                                        customer
-                                            .rationCard,
-                                      ),
-                                    ),
-
-                                    // ============================
-                                    // AADHAAR
-                                    // ============================
-
-                                    ListTile(
-                                      dense:
-                                          true,
-
-                                      leading:
-                                          const Icon(
-                                        Icons
-                                            .badge,
-                                      ),
-
-                                      title:
-                                          Text(
-                                        customer
-                                            .aadhaar,
-                                      ),
-                                    ),
-
-                                    // ============================
-                                    // UNITS
-                                    // ============================
-
-                                    ListTile(
-                                      dense:
-                                          true,
-
-                                      leading:
-                                          const Icon(
-                                        Icons
-                                            .people,
-                                      ),
-
-                                      title:
-                                          Text(
-                                        "Units : "
-                                        "${customer.units}",
-                                      ),
-                                    ),
-
-                                    const SizedBox(
-                                      height:
-                                          10,
-                                    ),
-
-                                    // ============================
-                                    // ACTIONS
-                                    // ============================
-
-                                  Container(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 5,
-                                        vertical: 4,
-                                      ),
-                                      decoration: BoxDecoration(
-                                        color: backgroundColor,
-                                        borderRadius:
-                                            BorderRadius.circular(10),
-                                      ),
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.end,
-                                        children: [
-                                          // CALL
-                                          IconButton(
-                                            tooltip: "Call",
-                                            icon: const Icon(
-                                              Icons.call,
-                                              color: successColor,
-                                            ),
-                                            onPressed:
-                                                customer.mobile.isEmpty
-                                                    ? null
-                                                    : () => makeCall(
-                                                          customer.mobile,
-                                                        ),
-                                          ),
-
-                                          // TEXT
-                                          IconButton(
-                                            tooltip: "Text / SMS",
-                                            icon: const Icon(
-                                              Icons.sms_outlined,
-                                              color: Colors.green,
-                                            ),
-                                            onPressed:
-                                                customer.mobile.isEmpty
-                                                    ? null
-                                                    : () => sendSMS(
-                                                          customer.mobile,
-                                                        ),
-                                          ),
-
-                                          // COPY
-                                          IconButton(
-                                            tooltip: "Copy Mobile Number",
-                                            icon: const Icon(
-                                              Icons.copy,
-                                              color: Colors.green,
-                                            ),
-                                            onPressed:
-                                                customer.mobile.isEmpty
-                                                    ? null
-                                                    : () => copyNumber(
-                                                          customer.mobile,
-                                                        ),
-                                          ),
-
-                                          // EDIT
-                                          IconButton(
-                                            tooltip: "Edit",
-                                            icon: const Icon(
-                                              Icons.edit,
-                                              color: accentColor,
-                                            ),
-                                            onPressed: () =>
-                                                showEditDialog(
-                                              hiveKey,
-                                              customer,
-                                            ),
-                                          ),
-
-                                          // DELETE
-                                          IconButton(
-                                            tooltip: "Delete",
-                                            icon: const Icon(
-                                              Icons.delete_outline,
-                                              color: dangerColor,
-                                            ),
-                                            onPressed: () =>
-                                                deleteCustomer(
-                                              hiveKey,
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            );
-                          },
+                            return buildCustomerCard(entry);                          },
                         ),
             ),
 

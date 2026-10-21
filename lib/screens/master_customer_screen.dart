@@ -1,7 +1,10 @@
-import 'package:excel/excel.dart';
+import 'package:excel/excel.dart' as excel_f;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 
 import '../database/hive_helper.dart';
 import '../models/customer.dart';
@@ -28,6 +31,16 @@ class _MasterCustomerScreenState
   static const Color successColor = Color(0xFF386641);
   static const Color dangerColor = Color(0xFF8B3A3A);
 
+  String getCurrentDateForFilename() {
+    final now = DateTime.now();
+
+    final day = now.day.toString().padLeft(2, '0');
+    final month = now.month.toString().padLeft(2, '0');
+    final year = now.year.toString();
+
+    return '$day-$month-$year';
+  }
+
   // ============================================================
   // DATA
   // ============================================================
@@ -40,6 +53,48 @@ class _MasterCustomerScreenState
 
   int currentPage = 1;
   final int recordsPerPage = 10;
+
+  // Selected Hive keys — persists across pagination.
+  final Set<dynamic> selectedCustomerKeys = {};
+
+  bool get hasSelectedCustomers =>
+      selectedCustomerKeys.isNotEmpty;
+
+  List<MapEntry<dynamic, Customer>> get selectedCustomers {
+    return customers
+        .where((entry) => selectedCustomerKeys.contains(entry.key))
+        .toList();
+  }
+
+  void toggleCustomerSelection(dynamic key, bool selected) {
+    setState(() {
+      if (selected) {
+        selectedCustomerKeys.add(key);
+      } else {
+        selectedCustomerKeys.remove(key);
+      }
+    });
+  }
+
+  void toggleSelectAllFiltered(bool selected) {
+    setState(() {
+      if (selected) {
+        selectedCustomerKeys.addAll(
+          filteredCustomers.map((entry) => entry.key),
+        );
+      } else {
+        selectedCustomerKeys.removeAll(
+          filteredCustomers.map((entry) => entry.key),
+        );
+      }
+    });
+  }
+
+  void clearSelection() {
+    setState(() {
+      selectedCustomerKeys.clear();
+    });
+  }
 
   // ============================================================
   // INIT
@@ -79,6 +134,85 @@ class _MasterCustomerScreenState
         currentPage = totalPages;
       }
     });
+  }
+
+  // ============================================================
+  // TRANSFER ALL MASTER CUSTOMERS TO VIEW RECORDS
+  // ============================================================
+
+  Future<void> transferAllMasterCustomers() async {
+    final masterCount = HiveHelper.getMasterCustomers().length;
+
+    if (masterCount == 0) {
+      _showMessage(
+        'Master Customer List is empty.',
+        isError: true,
+      );
+      return;
+    }
+
+    // Confirm before deleting existing View Records.
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text(
+            'Replace All View Records?',
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              color:  Colors.green,
+            ),
+          ),
+          content: Text(
+            'This will permanently remove all existing records '
+            'from View Records and replace them with all '
+            '$masterCount customers from the Master Customer List.\n\n'
+            'The Master Customer List will remain unchanged.\n\n'
+            'Do you want to continue?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Clear & Transfer'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    try {
+      final transferredCount =
+          await HiveHelper.replaceViewRecordsWithMasterCustomers();
+
+      if (!mounted) return;
+
+      _showMessage(
+        '$transferredCount customers transferred successfully.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage(
+        'Transfer failed: $e',
+        isError: true,
+      );
+    }
   }
 
   // ============================================================
@@ -510,6 +644,314 @@ class _MasterCustomerScreenState
     aadhaarController.dispose();
   }
 
+  Future<void> exportSelectedCustomersToExcel() async {
+    if (selectedCustomers.isEmpty) {
+      _showMessage(
+        'Please select at least one customer.',
+        isError: true,
+      );
+      return;
+    }
+
+    final selectedFields = await showExportFieldDialog();
+
+    if (selectedFields == null || selectedFields.isEmpty) {
+      return;
+    }
+
+    try {
+      final workbook = excel_f.Excel.createExcel();
+
+      final sheet = workbook['Customers List'];
+
+      final headerStyle = excel_f.CellStyle(
+        bold: true,
+        horizontalAlign: excel_f.HorizontalAlign.Center,
+      );
+
+      String getFieldValue(Customer customer, String field) {
+        switch (field) {
+          case 'Customer Name':
+            return customer.name;
+          case 'Mobile Number':
+            return customer.mobile;
+          case 'Ration Card Number':
+            return customer.rationCard;
+          case 'Aadhaar Number':
+            return customer.aadhaar;
+          case 'Units':
+            return customer.units;
+          default:
+            return '';
+        }
+      }
+
+      for (var column = 0;
+          column < selectedFields.length;
+          column++) {
+        sheet.setColumnWidth(column, 24);
+
+        final cell = sheet.cell(
+          excel_f.CellIndex.indexByColumnRow(
+            columnIndex: column,
+            rowIndex: 0,
+          ),
+        );
+
+        cell.value = excel_f.TextCellValue(selectedFields[column]);
+        cell.cellStyle = headerStyle;
+      }
+
+      for (final entry in selectedCustomers) {
+        final customer = entry.value;
+
+        sheet.appendRow(
+          selectedFields.map((field) {
+            return excel_f.TextCellValue(
+              getFieldValue(customer, field),
+            );
+          }).toList(),
+        );
+      }
+
+      final bytes = workbook.encode();
+
+      if (bytes == null) {
+        throw Exception('Unable to generate Excel file.');
+      }
+
+      final date = getCurrentDateForFilename();
+      await ExcelExportService.saveExcel(
+        bytes,
+        'CustomersList_$date.xlsx',
+      );
+
+      if (!mounted) return;
+
+      _showMessage(
+        'Excel exported: ${selectedCustomers.length} customers.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage(
+        'Excel export failed: $e',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> exportSelectedCustomersToPdf() async {
+    if (selectedCustomers.isEmpty) {
+      _showMessage(
+        'Please select at least one customer.',
+        isError: true,
+      );
+      return;
+    }
+
+    final fontData = await rootBundle.load(
+      'assets/fonts/NotoSansTelugu-Regular.ttf',
+    );
+    final teluguFont = pw.Font.ttf(fontData);
+    final selectedFields = await showExportFieldDialog();
+
+    if (selectedFields == null || selectedFields.isEmpty) {
+      return;
+    }
+
+    try {
+      final document = pw.Document();
+
+      String getFieldValue(Customer customer, String field) {
+        switch (field) {
+          case 'Customer Name':
+            return customer.name;
+          case 'Mobile Number':
+            return customer.mobile;
+          case 'Ration Card Number':
+            return customer.rationCard;
+          case 'Aadhaar Number':
+            return customer.aadhaar;
+          case 'Units':
+            return customer.units;
+          default:
+            return '';
+        }
+      }
+
+      final tableRows = <List<String>>[
+        selectedFields,
+        ...selectedCustomers.map((entry) {
+          return selectedFields.map((field) {
+            return getFieldValue(entry.value, field);
+          }).toList();
+        }),
+      ];
+
+      document.addPage(
+        pw.MultiPage(
+          pageFormat: PdfPageFormat.a4,
+          margin: const pw.EdgeInsets.all(28),
+          build: (context) {
+            return [
+              pw.Text(
+                'Customer List',
+                style: pw.TextStyle(
+                  fontSize: 20,
+                  fontWeight: pw.FontWeight.bold,
+                ),
+              ),
+              pw.SizedBox(height: 8),
+              pw.Text(
+                'Total customers: ${selectedCustomers.length}',
+                style: const pw.TextStyle(fontSize: 10),
+              ),
+              pw.SizedBox(height: 18),
+              pw.TableHelper.fromTextArray(
+                headers: ['S.No.', ...selectedFields],
+                data: selectedCustomers.asMap().entries.map((entry) {
+                  final serialNumber = entry.key + 1;
+                  final customer = entry.value.value;
+
+                  return [
+                    serialNumber.toString(),
+                    ...selectedFields.map((field) {
+                      switch (field) {
+                        case 'Customer Name':
+                          return customer.name;
+                        case 'Mobile Number':
+                          return customer.mobile;
+                        case 'Ration Card Number':
+                          return customer.rationCard;
+                        case 'Aadhaar Number':
+                          return customer.aadhaar;
+                        case 'Units':
+                          return customer.units;
+                        default:
+                          return '';
+                      }
+                    }),
+                  ];
+                }).toList(),
+                headerStyle: pw.TextStyle(
+                  font: teluguFont,
+                  fontWeight: pw.FontWeight.bold,
+                  fontSize: 9,
+                ),
+                cellStyle: pw.TextStyle(
+                  font: teluguFont,
+                  fontSize: 9,
+                ),
+                headerDecoration: const pw.BoxDecoration(
+                  color: PdfColors.grey300,
+                ),
+                cellAlignment: pw.Alignment.centerLeft,
+                border: pw.TableBorder.all(
+                  color: PdfColors.grey400,
+                  width: 0.5,
+                ),
+              ),
+            ];
+          },
+        ),
+      );
+
+      final bytes = await document.save();
+      final date = getCurrentDateForFilename();
+
+      await Printing.sharePdf(
+        bytes: bytes,
+        filename: 'CustomerList_$date.pdf',
+      );
+      if (!mounted) return;
+
+      _showMessage(
+        'PDF generated for ${selectedCustomers.length} customers.',
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage(
+        'PDF export failed: $e',
+        isError: true,
+      );
+    }
+  }
+
+  Future<List<String>?> showExportFieldDialog() async {
+    final fields = <String, bool>{
+      'Customer Name': true,
+      'Mobile Number': true,
+      'Ration Card Number': true,
+      'Aadhaar Number': false,
+      'Units': true,
+    };
+
+    return showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Select Export Fields'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: fields.keys.map((field) {
+                    return CheckboxListTile(
+                      title: Text(field),
+                      value: fields[field],
+                      activeColor: Colors.green,
+                      contentPadding: EdgeInsets.zero,
+                      onChanged: (value) {
+                        setDialogState(() {
+                          fields[field] = value ?? false;
+                        });
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    final selectedFields = fields.entries
+                        .where((entry) => entry.value)
+                        .map((entry) => entry.key)
+                        .toList();
+
+                    if (selectedFields.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Select at least one field.',
+                          ),
+                        ),
+                      );
+                      return;
+                    }
+
+                    Navigator.pop(
+                      dialogContext,
+                      selectedFields,
+                    );
+                  },
+                  child: const Text('Continue'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
   // ============================================================
   // EDIT CUSTOMER
   // ============================================================
@@ -787,6 +1229,118 @@ class _MasterCustomerScreenState
   }
 
   // ============================================================
+  // MANAGE CALL STATUS
+  // ============================================================
+
+  Future<void> showCallStatusDialog(
+    dynamic hiveKey,
+    Customer customer,
+  ) async {
+    const statuses = [
+      'Not Called',
+      'Call Initiated',
+      'Answered',
+      'Not Answered',
+      'Busy',
+      'Call Back Required',
+      'Completed',
+    ];
+
+    String selectedStatus = statuses.contains(customer.callStatus)
+        ? customer.callStatus
+        : 'Not Called';
+
+    final result = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Update Call Status'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    customer.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<String>(
+                    value: selectedStatus,
+                    decoration: const InputDecoration(
+                      labelText: 'Call Status',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: statuses.map((status) {
+                      return DropdownMenuItem<String>(
+                        value: status,
+                        child: Text(status),
+                      );
+                    }).toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+
+                      setDialogState(() {
+                        selectedStatus = value;
+                      });
+                    },
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(dialogContext);
+                  },
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.pop(
+                      dialogContext,
+                      selectedStatus,
+                    );
+                  },
+                  child: const Text('Save Status'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (result == null) return;
+
+    try {
+      await HiveHelper.updateCallTracking(
+        isMaster: true,
+        key: hiveKey,
+        status: result,
+        lastCalledAt: result == 'Not Called'
+            ? null
+            : DateTime.now(),
+      );
+
+      await loadCustomers();
+
+      if (!mounted) return;
+
+      _showMessage('Call status updated: $result');
+    } catch (e) {
+      if (!mounted) return;
+
+      _showMessage(
+        'Unable to update call status: $e',
+        isError: true,
+      );
+    }
+  }
+
+  // ============================================================
   // DELETE CUSTOMER
   // ============================================================
 
@@ -1023,7 +1577,7 @@ class _MasterCustomerScreenState
 
   Future<void> exportMasterToExcel() async {
     try {
-      final excel = Excel.createExcel();
+      final excel = excel_f.Excel.createExcel();
       excel.rename('Sheet1', 'Master Customers');
 
       final sheet =
@@ -1037,10 +1591,10 @@ class _MasterCustomerScreenState
       sheet.setColumnWidth(4, 12);
 
       // Header style
-      final headerStyle = CellStyle(
+      final headerStyle = excel_f.CellStyle(
         bold: true,
         horizontalAlign:
-            HorizontalAlign.Center,
+            excel_f.HorizontalAlign.Center,
       );
 
       final headers = [
@@ -1053,14 +1607,14 @@ class _MasterCustomerScreenState
 
       for (int i = 0; i < headers.length; i++) {
         final cell = sheet.cell(
-          CellIndex.indexByColumnRow(
+          excel_f.CellIndex.indexByColumnRow(
             columnIndex: i,
             rowIndex: 0,
           ),
         );
 
         cell.value =
-            TextCellValue(headers[i]);
+            excel_f.TextCellValue(headers[i]);
 
         cell.cellStyle = headerStyle;
       }
@@ -1073,12 +1627,12 @@ class _MasterCustomerScreenState
         final customer = entry.value;
 
         sheet.appendRow([
-          TextCellValue(customer.name),
-          TextCellValue(customer.mobile),
-          TextCellValue(
+          excel_f.TextCellValue(customer.name),
+          excel_f.TextCellValue(customer.mobile),
+          excel_f.TextCellValue(
               customer.rationCard),
-          TextCellValue(customer.aadhaar),
-          TextCellValue(customer.units),
+          excel_f.TextCellValue(customer.aadhaar),
+          excel_f.TextCellValue(customer.units),
         ]);
       }
 
@@ -1134,21 +1688,65 @@ class _MasterCustomerScreenState
   // CUSTOMER CARD
   // ============================================================
 
+  // ============================================================
+  // MASTER CUSTOMER CARD
+  // ============================================================
+
   Widget buildCustomerCard(
     MapEntry<dynamic, Customer> entry,
   ) {
     final hiveKey = entry.key;
     final customer = entry.value;
 
+    final callStatus = customer.callStatus.isEmpty
+        ? 'Not Called'
+        : customer.callStatus;
+
+    final lastCalledAt = customer.lastCalledAt;
+
+    final parsedDate = lastCalledAt == null ||
+            lastCalledAt.trim().isEmpty
+        ? null
+        : DateTime.tryParse(lastCalledAt);
+
+    final formattedLastCalled = parsedDate == null
+        ? 'Never'
+        : '${parsedDate.toLocal().day.toString().padLeft(2, '0')}/'
+            '${parsedDate.toLocal().month.toString().padLeft(2, '0')}/'
+            '${parsedDate.toLocal().year} '
+            '${parsedDate.toLocal().hour.toString().padLeft(2, '0')}:'
+            '${parsedDate.toLocal().minute.toString().padLeft(2, '0')}';
+
+    Color getStatusColor(String status) {
+      switch (status) {
+        case 'Completed':
+          return Colors.green;
+        case 'Answered':
+          return Colors.teal;
+        case 'Call Back Required':
+          return Colors.orange;
+        case 'Not Answered':
+          return Colors.deepOrange;
+        case 'Busy':
+          return Colors.red;
+        case 'Call Initiated':
+          return Colors.blue;
+        default:
+          return Colors.grey;
+      }
+    }
+
+    final statusColor = getStatusColor(callStatus);
+
     return Card(
       margin: const EdgeInsets.symmetric(
         horizontal: 15,
         vertical: 7,
       ),
-      elevation: 2,
+      elevation: 3,
       color: Colors.white,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         side: BorderSide(
           color: Colors.grey.shade200,
         ),
@@ -1156,8 +1754,7 @@ class _MasterCustomerScreenState
       child: Padding(
         padding: const EdgeInsets.all(14),
         child: Column(
-          crossAxisAlignment:
-              CrossAxisAlignment.start,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // ==================================================
             // CUSTOMER NAME
@@ -1165,13 +1762,23 @@ class _MasterCustomerScreenState
 
             Row(
               children: [
+                Checkbox(
+                  value: selectedCustomerKeys.contains(hiveKey),
+                  activeColor: Colors.green,
+                  onChanged: (value) {
+                    toggleCustomerSelection(
+                      hiveKey,
+                      value ?? false,
+                    );
+                  },
+                ),
                 CircleAvatar(
                   radius: 23,
-                  backgroundColor:
-                      Colors.green,
+                  backgroundColor: Colors.green.shade700,
                   child: const Icon(
                     Icons.person,
                     color: Colors.white,
+                    size: 27,
                   ),
                 ),
 
@@ -1179,7 +1786,11 @@ class _MasterCustomerScreenState
 
                 Expanded(
                   child: Text(
-                    customer.name,
+                    customer.name.isEmpty
+                        ? 'Unnamed Customer'
+                        : customer.name,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
                       fontSize: 19,
                       fontWeight: FontWeight.bold,
@@ -1195,7 +1806,7 @@ class _MasterCustomerScreenState
             const Divider(),
 
             // ==================================================
-            // MOBILE
+            // MOBILE NUMBER
             // ==================================================
 
             ListTile(
@@ -1207,7 +1818,7 @@ class _MasterCustomerScreenState
               ),
               title: Text(
                 customer.mobile.isEmpty
-                    ? "No mobile number"
+                    ? 'No mobile number'
                     : customer.mobile,
               ),
             ),
@@ -1224,7 +1835,9 @@ class _MasterCustomerScreenState
                 color: Colors.green,
               ),
               title: Text(
-                customer.rationCard,
+                customer.rationCard.isEmpty
+                    ? 'No ration card number'
+                    : customer.rationCard,
               ),
             ),
 
@@ -1241,7 +1854,7 @@ class _MasterCustomerScreenState
               ),
               title: Text(
                 customer.aadhaar.isEmpty
-                    ? "No Aadhaar number"
+                    ? 'No Aadhaar number'
                     : customer.aadhaar,
               ),
             ),
@@ -1258,84 +1871,177 @@ class _MasterCustomerScreenState
                 color: Colors.green,
               ),
               title: Text(
-                "Units : ${customer.units}",
+                'Units: ${customer.units}',
               ),
             ),
 
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
 
             // ==================================================
-            // ACTIONS
+            // CALL STATUS
             // ==================================================
 
             Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: statusColor.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: statusColor.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.assignment_outlined,
+                        color: statusColor,
+                        size: 21,
+                      ),
+
+                      const SizedBox(width: 8),
+
+                      const Text(
+                        'Call Status',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+
+                      const Spacer(),
+
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 5,
+                          ),
+                          decoration: BoxDecoration(
+                            color: statusColor,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            callStatus,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 8),
+
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.access_time,
+                        size: 17,
+                        color: Colors.grey.shade700,
+                      ),
+
+                      const SizedBox(width: 7),
+
+                      Expanded(
+                        child: Text(
+                          'Last called: $formattedLastCalled',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey.shade700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 10),
+
+            // ==================================================
+            // ACTION BUTTONS
+            // ==================================================
+
+            Container(
+              width: double.infinity,
               padding: const EdgeInsets.symmetric(
                 horizontal: 5,
                 vertical: 4,
               ),
               decoration: BoxDecoration(
-                color: backgroundColor,
-                borderRadius:
-                    BorderRadius.circular(10),
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(12),
               ),
-              child: Row(
-                mainAxisAlignment:
-                    MainAxisAlignment.end,
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                spacing: 2,
+                runSpacing: 2,
                 children: [
                   // CALL
                   IconButton(
-                    tooltip: "Call",
+                    tooltip: 'Call',
                     icon: const Icon(
                       Icons.call,
-                      color: successColor,
+                      color: Colors.green,
                     ),
-                    onPressed:
-                        customer.mobile.isEmpty
-                            ? null
-                            : () => makeCall(
-                                  customer.mobile,
-                                ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => makeCall(customer.mobile),
                   ),
 
-                  // TEXT
+                  // UPDATE CALL STATUS
                   IconButton(
-                    tooltip: "Text / SMS",
+                    tooltip: 'Update Call Status',
+                    icon: const Icon(
+                      Icons.assignment_outlined,
+                      color: Colors.blue,
+                    ),
+                    onPressed: () => showCallStatusDialog(
+                      hiveKey,
+                      customer,
+                    ),
+                  ),
+
+                  // SMS
+                  IconButton(
+                    tooltip: 'Text / SMS',
                     icon: const Icon(
                       Icons.sms_outlined,
                       color: Colors.green,
                     ),
-                    onPressed:
-                        customer.mobile.isEmpty
-                            ? null
-                            : () => sendSMS(
-                                  customer.mobile,
-                                ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => sendSMS(customer.mobile),
                   ),
 
-                  // COPY
+                  // COPY NUMBER
                   IconButton(
-                    tooltip: "Copy Mobile Number",
+                    tooltip: 'Copy Mobile Number',
                     icon: const Icon(
                       Icons.copy,
-                      color: Colors.green,
+                      color: Colors.teal,
                     ),
-                    onPressed:
-                        customer.mobile.isEmpty
-                            ? null
-                            : () => copyNumber(
-                                  customer.mobile,
-                                ),
+                    onPressed: customer.mobile.trim().isEmpty
+                        ? null
+                        : () => copyNumber(customer.mobile),
                   ),
 
                   // EDIT
                   IconButton(
-                    tooltip: "Edit",
+                    tooltip: 'Edit Customer',
                     icon: const Icon(
                       Icons.edit,
-                      color: accentColor,
+                      color: Colors.blue,
                     ),
-                    onPressed: () =>
-                        showEditDialog(
+                    onPressed: () => showEditDialog(
                       hiveKey,
                       customer,
                     ),
@@ -1343,15 +2049,12 @@ class _MasterCustomerScreenState
 
                   // DELETE
                   IconButton(
-                    tooltip: "Delete",
+                    tooltip: 'Delete Customer',
                     icon: const Icon(
                       Icons.delete_outline,
-                      color: dangerColor,
+                      color: Colors.red,
                     ),
-                    onPressed: () =>
-                        deleteCustomer(
-                      hiveKey,
-                    ),
+                    onPressed: () => deleteCustomer(hiveKey),
                   ),
                 ],
               ),
@@ -1361,7 +2064,6 @@ class _MasterCustomerScreenState
       ),
     );
   }
-
   // ============================================================
   // BUILD
   // ============================================================
@@ -1547,6 +2249,129 @@ class _MasterCustomerScreenState
               ),
             ),
 
+            if (hasSelectedCustomers)
+              Container(
+                margin: const EdgeInsets.symmetric(
+                  horizontal: 15,
+                  vertical: 8,
+                ),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Colors.green.shade200,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${selectedCustomerKeys.length} customer(s) selected',
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              color: Colors.green,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: clearSelection,
+                          child: const Text('Clear'),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      children: [
+                        ElevatedButton.icon(
+                          onPressed: exportSelectedCustomersToPdf,
+                          icon: const Icon(Icons.picture_as_pdf),
+                          label: const Text('Download PDF'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade700,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                        ElevatedButton.icon(
+                          onPressed: exportSelectedCustomersToExcel,
+                          icon: const Icon(Icons.table_view),
+                          label: const Text('Download Excel'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            
+            // ==================================================
+            // SELECT ALL FILTERED CUSTOMERS
+            // ==================================================
+
+            CheckboxListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 15,
+              ),
+              title: const Text(
+                'Select all filtered customers',
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              value: filteredCustomers.isNotEmpty &&
+                  filteredCustomers.every(
+                    (entry) =>
+                        selectedCustomerKeys.contains(entry.key),
+                  ),
+              onChanged: (value) {
+                toggleSelectAllFiltered(value ?? false);
+              },
+            ),
+
+            // ============================================================
+            // TRANSFER ALL TO VIEW RECORDS
+            // ============================================================
+
+            Padding(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 15,
+                vertical: 8,
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton.icon(
+                  onPressed: transferAllMasterCustomers,
+                  icon: const Icon(Icons.sync_alt),
+                  label: const Text(
+                    'TRANSFER ALL TO VIEW RECORDS',
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green.shade700,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 14,
+                      horizontal: 12,
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                ),
+              ),
+            ),
             const SizedBox(height: 5),
 
             // ==================================================

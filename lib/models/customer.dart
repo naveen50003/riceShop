@@ -7,6 +7,10 @@ class Customer {
   String aadhaar;
   String units;
 
+  // Call tracking fields
+  String callStatus;
+  String? lastCalledAt;
+
   Customer({
     this.key,
     required this.name,
@@ -14,6 +18,8 @@ class Customer {
     required this.rationCard,
     required this.aadhaar,
     required this.units,
+    this.callStatus = 'Not Called',
+    this.lastCalledAt,
   });
 
   Map<String, dynamic> toMap() {
@@ -23,10 +29,15 @@ class Customer {
       'rationCard': rationCard,
       'aadhaar': aadhaar,
       'units': units,
+      'callStatus': callStatus,
+      'lastCalledAt': lastCalledAt,
     };
   }
 
-  factory Customer.fromMap(Map<String, dynamic> map, {int? key}) {
+  factory Customer.fromMap(
+    Map<String, dynamic> map, {
+    int? key,
+  }) {
     return Customer(
       key: key,
       name: map['name'] ?? '',
@@ -34,6 +45,8 @@ class Customer {
       rationCard: map['rationCard'] ?? '',
       aadhaar: map['aadhaar'] ?? '',
       units: map['units'] ?? '',
+      callStatus: map['callStatus'] ?? 'Not Called',
+      lastCalledAt: map['lastCalledAt']?.toString(),
     );
   }
 }

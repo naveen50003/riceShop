@@ -9,6 +9,34 @@ class HiveHelper {
   static late Box customersBox;
   static late Box masterCustomersBox;
 
+  // ============================================================
+  // REPLACE VIEW RECORDS WITH ALL MASTER CUSTOMERS
+  // ============================================================
+
+  static Future<int> replaceViewRecordsWithMasterCustomers() async {
+    // Read all master records before modifying View Records.
+    final masterRecords = masterCustomersBox.values.map((record) {
+      return Map<String, dynamic>.from(record as Map);
+    }).toList();
+
+    // Prevent accidentally clearing View Records if Master is empty.
+    if (masterRecords.isEmpty) {
+      throw Exception(
+        'Master Customer List is empty. No records were transferred.',
+      );
+    }
+
+    // Clear all existing operational records.
+    await customersBox.clear();
+
+    // Insert every master customer into View Records.
+    for (final record in masterRecords) {
+      await customersBox.add(record);
+    }
+
+    return masterRecords.length;
+  }
+
   // ------------------------------------------------------------
   // INITIALIZE HIVE
   // ------------------------------------------------------------
@@ -191,5 +219,37 @@ class HiveHelper {
     );
 
     return false;
+  }
+
+
+  // ============================================================
+  // UPDATE CALL STATUS
+  // ============================================================
+
+  static Future<void> updateCallTracking({
+    required bool isMaster,
+    required dynamic key,
+    required String status,
+    DateTime? lastCalledAt,
+  }) async {
+    final box = isMaster
+        ? masterCustomersBox
+        : customersBox;
+
+    final existingValue = box.get(key);
+
+    if (existingValue == null) {
+      throw Exception('Customer record not found.');
+    }
+
+    final customerMap =
+        Map<String, dynamic>.from(existingValue as Map);
+
+    customerMap['callStatus'] = status;
+
+    customerMap['lastCalledAt'] =
+        lastCalledAt?.toIso8601String();
+
+    await box.put(key, customerMap);
   }
 }
