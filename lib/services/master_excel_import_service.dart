@@ -108,6 +108,7 @@ class MasterExcelImportService {
       'rc number',
       'rc no',
       'rc no.',
+      'Ration Card Number'
     ]);
 
     final aadhaarIndex = _findHeader(headers, [

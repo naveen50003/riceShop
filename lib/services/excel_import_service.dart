@@ -19,11 +19,7 @@ class ExcelImportService {
     );
 
     if (result == null) {
-      return {
-        "inserted": 0,
-        "updated": 0,
-        "skipped": 0,
-      };
+      return {"inserted": 0, "updated": 0, "skipped": 0};
     }
 
     Uint8List bytes = result.files.single.bytes!;
@@ -33,9 +29,7 @@ class ExcelImportService {
     var sheet = excel.tables['Customers'];
 
     if (sheet == null) {
-      throw Exception(
-        "Customers sheet not found in Excel file.",
-      );
+      throw Exception("Customers sheet not found in Excel file.");
     }
 
     final rows = sheet.rows;
@@ -49,20 +43,23 @@ class ExcelImportService {
 
       if (row.isEmpty) continue;
 
-      String name =
-          row.length > 0 ? row[0]?.value.toString().trim() ?? "" : "";
+      String name = row.length > 0 ? row[0]?.value.toString().trim() ?? "" : "";
 
-      String mobile =
-          row.length > 1 ? row[1]?.value.toString().trim() ?? "" : "";
+      String mobile = row.length > 1
+          ? row[1]?.value.toString().trim() ?? ""
+          : "";
 
-      String rationCard =
-          row.length > 2 ? row[2]?.value.toString().trim() ?? "" : "";
+      String rationCard = row.length > 2
+          ? row[2]?.value.toString().trim() ?? ""
+          : "";
 
-      String aadhaar =
-          row.length > 3 ? row[3]?.value.toString().trim() ?? "" : "";
+      String aadhaar = row.length > 3
+          ? row[3]?.value.toString().trim() ?? ""
+          : "";
 
-      String units =
-          row.length > 4 ? row[4]?.value.toString().trim() ?? "" : "";
+      String units = row.length > 4
+          ? row[4]?.value.toString().trim() ?? ""
+          : "";
 
       if (rationCard.isEmpty) {
         skipped++;
@@ -77,8 +74,9 @@ class ExcelImportService {
         units: units,
       );
 
-      bool exists =
-          await HiveHelper.saveOrUpdate(customer);
+      bool exists = await HiveHelper.saveOrUpdate(customer);
+
+      await HiveHelper.recordDailySale(customer);
 
       if (exists) {
         updated++;
@@ -87,10 +85,6 @@ class ExcelImportService {
       }
     }
 
-    return {
-      "inserted": inserted,
-      "updated": updated,
-      "skipped": skipped,
-    };
+    return {"inserted": inserted, "updated": updated, "skipped": skipped};
   }
 }

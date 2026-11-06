@@ -584,6 +584,123 @@ class _RecordsScreenState extends State<RecordsScreen> {
     }
   }
 
+  Future<void> checkMissingMasterCustomer(
+    String rationCard,
+  ) async {
+    final enteredRationCard = rationCard.trim();
+
+    if (enteredRationCard.isEmpty) return;
+
+    // Check the Master Customer List first.
+    final masterCustomer =
+        HiveHelper.getMasterByRationCard(enteredRationCard);
+
+    if (masterCustomer != null) {
+      return;
+    }
+
+    // Check the separately uploaded Excel list.
+    final existsInExcel =
+        HiveHelper.isMissingRationCardInExcel(
+      enteredRationCard,
+    );
+
+    if (!existsInExcel || !mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+
+          title: const Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: Colors.orange,
+                size: 30,
+              ),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Customer Missing from Master',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This ration card number exists in your '
+                'uploaded Excel file but is not present '
+                'in Master Customer List.',
+              ),
+
+              const SizedBox(height: 16),
+
+              const Text(
+                'Ration Card Number',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 5),
+
+              SelectableText(
+                enteredRationCard,
+                style: const TextStyle(
+                  fontSize: 16,
+                  color: Colors.deepOrange,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+
+              const SizedBox(height: 10),
+
+              const Text(
+                'Please add this customer to the Master Customer List.',
+              ),
+            ],
+          ),
+
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+              },
+              child: const Text('REMIND ME LATER'),
+            ),
+
+            ElevatedButton.icon(
+              icon: const Icon(Icons.person_add),
+              label: const Text('ADD TO MASTER'),
+
+              onPressed: () {
+                Navigator.pop(dialogContext);
+
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => const MasterCustomerScreen(),
+                  ),
+                );
+              },
+            ),
+          ],
+        );
+      },
+    );
+  }
   // ============================================================
   // DELETE CUSTOMER
   // ============================================================
@@ -1454,19 +1571,6 @@ class _RecordsScreenState extends State<RecordsScreen> {
                     onPressed: () => shareCustomer(customer),
                   ),
 
-                  // EDIT
-                  IconButton(
-                    tooltip: 'Edit Customer',
-                    icon: const Icon(
-                      Icons.edit,
-                      color: Colors.blue,
-                    ),
-                    onPressed: () => showEditDialog(
-                      hiveKey,
-                      customer,
-                    ),
-                  ),
-
                   // DELETE
                   IconButton(
                     tooltip: 'Delete Customer',
@@ -1550,6 +1654,9 @@ class _RecordsScreenState extends State<RecordsScreen> {
               child: TextField(
                 controller:
                     searchController,
+                onSubmitted: (value) {
+                  checkMissingMasterCustomer(value);
+                },
 
                 decoration:
                     InputDecoration(
